@@ -1,0 +1,94 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Moodify | My Music</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <h2 class="logo">♫ Moodify</h2>
+
+    <p class="label">YOUR LIBRARY</p>
+    <button class="nav active" data-filter="All">⌂ All Songs</button>
+    <button class="nav" data-filter="Liked">♥ Liked Songs</button>
+
+    <p class="label">YOUR MOODS</p>
+    <button class="nav" data-filter="Happy">☀ Happy</button>
+    <button class="nav" data-filter="Sad">☂ Sad</button>
+    <button class="nav" data-filter="Chill">☁ Chill</button>
+    <button class="nav" data-filter="Energetic">⚡ Energetic</button>
+    <button class="nav" data-filter="Romantic">♡ Romantic</button>
+    <button class="nav" data-filter="Focus">◎ Focus</button>
+  </aside>
+
+  <main>
+    <header>
+      <div>
+        <p class="label">YOUR PERSONAL MUSIC SPACE</p>
+        <h1 id="pageTitle">All Songs</h1>
+      </div>
+      <input id="search" type="search" placeholder="Search your songs...">
+    </header>
+
+    <section class="hero">
+      <div>
+        <p class="label">MUSIC FOR EVERY MOOD</p>
+        <h2>Your world.<br>Your music.</h2>
+        <p>Your favourite songs, organized your way.</p>
+        <button id="importBtn" class="primary">＋ Add Your Songs</button>
+        <input id="fileInput" type="file" accept="audio/*" multiple hidden>
+      </div>
+      <div class="hero-symbol">♫</div>
+    </section>
+
+    <section>
+      <div class="section-heading">
+        <div>
+          <h2 id="sectionTitle">Your Music</h2>
+          <p id="songCount">0 songs</p>
+        </div>
+      </div>
+      <div id="songGrid" class="song-grid"></div>
+      <p id="emptyMessage" class="empty">
+        Your library is empty. Click "Add Your Songs" to begin.
+      </p>
+    </section>
+  </main>
+
+  <footer class="player">
+    <div class="now-playing">
+      <div class="mini-art">♫</div>
+      <div class="track-info">
+        <strong id="nowTitle">No song selected</strong>
+        <span id="nowArtist">Choose a song to begin</span>
+      </div>
+      <button id="likeCurrent" class="heart">♡</button>
+    </div>
+
+    <div class="controls">
+      <div class="control-buttons">
+        <button id="previous">|◀</button>
+        <button id="playPause" class="play">▶</button>
+        <button id="next">▶|</button>
+      </div>
+      <div class="progress">
+        <span id="currentTime">0:00</span>
+        <input id="seek" type="range" min="0" max="100" value="0">
+        <span id="duration">0:00</span>
+      </div>
+    </div>
+
+    <div class="volume">
+      <span>♫</span>
+      <input id="volume" type="range" min="0" max="1"
+             step="0.01" value="0.8">
+    </div>
+  </footer>
+
+  <audio id="audio"></audio>
+  <script src="app.js"></script>
+</body>
+</html>
