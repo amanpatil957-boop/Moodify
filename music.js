@@ -1,232 +1,646 @@
 
+"use strict";
+
+// ============================================
+// 1. CONNECT TO YOUR EXISTING HTML
+// ============================================
+
 const fileInput = document.getElementById("fileInput");
 const importBtn = document.getElementById("importBtn");
 const songGrid = document.getElementById("songGrid");
-const emptyMessage = document.getElementById("emptyMessage");
-const search = document.getElementById("search");
+const searchInput = document.getElementById("search");
 const audio = document.getElementById("audio");
 
+const emptyMessage = document.getElementById("emptyMessage");
+const songCount = document.getElementById("songCount");
+const pageTitle = document.getElementById("pageTitle");
+const sectionTitle = document.getElementById("sectionTitle");
+
+const nowTitle = document.getElementById("nowTitle");
+const nowArtist = document.getElementById("nowArtist");
+const likeCurrent = document.getElementById("likeCurrent");
+
+const previousButton = document.getElementById("previous");
+const playPauseButton = document.getElementById("playPause");
+const nextButton = document.getElementById("next");
+
+const seek = document.getElementById("seek");
+const currentTime = document.getElementById("currentTime");
+const duration = document.getElementById("duration");
+const volume = document.getElementById("volume");
+
+// ============================================
+// 2. DATABASE CONFIGURATION
+// ============================================
+
+const DB_NAME = "MoodifyDatabase";
+const STORE_NAME = "songs";
+
+let db;
 let songs = [];
-let currentIndex = -1;
-let currentFilter = "All";
+let currentSongId = null;
+let selectedMood = "All";
+let currentObjectURL = null;
 
 const moods = [
-  "Happy", "Sad", "Chill",
-  "Energetic", "Romantic", "Focus", "Other"
+    "Happy",
+    "Sad",
+    "Chill",
+    "Energetic",
+    "Romantic",
+    "Focus",
+    "Other"
 ];
 
-importBtn.addEventListener("click", () => fileInput.click());
+// ============================================
+// 3. OPEN INDEXEDDB
+// ============================================
 
-fileInput.addEventListener("change", () => {
-  const files = Array.from(fileInput.files);
+function openDatabase() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, 1);
 
-  for (const file of files) {
-    if (!file.type.startsWith("audio/") &&
-        !/\.(mp3|wav|m4a|ogg|aac|flac|opus)$/i.test(file.name)) {
-      continue;
+        request.onupgradeneeded = (event) => {
+            const database = event.target.result;
+
+            if (!database.objectStoreNames.contains(STORE_NAME)) {
+                database.createObjectStore(STORE_NAME, {
+                    keyPath: "id",
+                    autoIncrement: true
+                });
+            }
+        };
+
+        request.onsuccess = () => {
+            resolve(request.result);
+        };
+
+        request.onerror = () => {
+            reject(request.error);
+        };
+    });
+}
+
+// ============================================
+// 4. SAVE A SONG PERMANENTLY IN THE BROWSER
+// ============================================
+
+function saveSong(song) {
+    return new Promise((resolve, reject) => {
+        const transaction = db.transaction(
+            STORE_NAME,
+            "readwrite"
+        );
+
+        const request = transaction
+            .objectStore(STORE_NAME)
+            .add(song);
+
+        let savedId;
+
+        request.onsuccess = () => {
+            savedId = request.result;
+        };
+
+        request.onerror = () => {
+            reject(request.error);
+        };
+
+        transaction.oncomplete = () => {
+            resolve(savedId);
+        };
+
+        transaction.onerror = () => {
+            reject(transaction.error);
+        };
+
+        transaction.onabort = () => {
+            reject(transaction.error || new Error("Save aborted"));
+        };
+    });
+}
+
+// ============================================
+// 5. UPDATE LIKES AND MOODS
+// ============================================
+
+function updateSavedSong(song) {
+    return new Promise((resolve, reject) => {
+        const transaction = db.transaction(
+            STORE_NAME,
+            "readwrite"
+        );
+
+        // Save the audio blob and metadata, not the temporary URL.
+        const savedSong = {
+            id: song.id,
+            title: song.title,
+            artist: song.artist,
+            mood: song.mood,
+            liked: song.liked,
+            audioBlob: song.audioBlob
+        };
+
+        const request = transaction
+            .objectStore(STORE_NAME)
+            .put(savedSong);
+
+        request.onerror = () => {
+            reject(request.error);
+        };
+
+        transaction.oncomplete = () => {
+            resolve();
+        };
+
+        transaction.onerror = () => {
+            reject(transaction.error);
+        };
+
+        transaction.onabort = () => {
+            reject(transaction.error || new Error("Update aborted"));
+        };
+    });
+}
+
+// ============================================
+// 6. LOAD SAVED SONGS WHEN THE PAGE OPENS
+// ============================================
+
+function loadSongs() {
+    return new Promise((resolve, reject) => {
+        const transaction = db.transaction(
+            STORE_NAME,
+            "readonly"
+        );
+
+        const request = transaction
+            .objectStore(STORE_NAME)
+            .getAll();
+
+        request.onsuccess = () => {
+            // Release old temporary audio URLs.
+            songs.forEach((song) => {
+                if (song.url) {
+                    URL.revokeObjectURL(song.url);
+                }
+            });
+
+            songs = request.result.map((song) => ({
+                ...song,
+                url: URL.createObjectURL(song.audioBlob)
+            }));
+
+            renderSongs();
+            resolve();
+        };
+
+        request.onerror = () => {
+            reject(request.error);
+        };
+    });
+}
+
+// ============================================
+// 7. ADD SONGS BUTTON
+// ============================================
+
+importBtn.addEventListener("click", () => {
+    fileInput.click();
+});
+
+// ============================================
+// 8. IMPORT AUDIO FILES
+// ============================================
+
+fileInput.addEventListener("change", async (event) => {
+    const files = Array.from(event.target.files);
+
+    if (files.length === 0) {
+        return;
     }
 
-    songs.push({
-      id: crypto.randomUUID(),
-      file,
-      title: file.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " "),
-      artist: "Unknown artist",
-      mood: "Other",
-      liked: false,
-      url: URL.createObjectURL(file)
-    });
-  }
+    try {
+        let addedCount = 0;
 
-  fileInput.value = "";
-  renderSongs();
+        for (const file of files) {
+            if (
+                !file.type.startsWith("audio/") &&
+                !/\.(mp3|wav|ogg|m4a|aac|flac|opus|wma)$/i.test(file.name)
+            ) {
+                continue;
+            }
+
+            const song = {
+                title: file.name.replace(/\.[^/.]+$/, ""),
+                artist: "Local file",
+                mood: "Chill",
+                liked: false,
+                audioBlob: file
+            };
+
+            const id = await saveSong(song);
+
+            songs.push({
+                ...song,
+                id,
+                url: URL.createObjectURL(file)
+            });
+
+            addedCount++;
+        }
+
+        renderSongs();
+
+        if (addedCount > 0) {
+            alert(`${addedCount} song(s) added to your library!`);
+        } else {
+            alert("No supported audio files were selected.");
+        }
+    } catch (error) {
+        console.error("Could not save songs:", error);
+        alert("Could not save your songs. Check browser storage space.");
+    } finally {
+        // Allows you to select the same file again later.
+        fileInput.value = "";
+    }
 });
+
+// ============================================
+// 9. ESCAPE HTML FOR SAFE DISPLAY
+// ============================================
+
+function escapeHTML(value) {
+    return String(value).replace(/[&<>"']/g, (character) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+    })[character]);
+}
+
+// ============================================
+// 10. DISPLAY SONGS, SEARCH AND MOOD FILTERS
+// ============================================
 
 function renderSongs() {
-  const query = search.value.toLowerCase().trim();
+    const query = searchInput.value.toLowerCase().trim();
 
-  const visible = songs
-    .map((song, index) => ({ ...song, index }))
-    .filter(song => {
-      const moodMatch =
-        currentFilter === "All" ||
-        (currentFilter === "Liked"
-          ? song.liked
-          : song.mood === currentFilter);
+    const filteredSongs = songs.filter((song) => {
+        const matchesMood =
+            selectedMood === "All" ||
+            (selectedMood === "Liked"
+                ? song.liked
+                : song.mood === selectedMood);
 
-      const searchMatch =
-        `${song.title} ${song.artist}`.toLowerCase().includes(query);
+        const matchesSearch =
+            song.title.toLowerCase().includes(query) ||
+            song.artist.toLowerCase().includes(query);
 
-      return moodMatch && searchMatch;
+        return matchesMood && matchesSearch;
     });
 
-  songGrid.innerHTML = "";
+    songCount.textContent =
+        `${filteredSongs.length} song${filteredSongs.length === 1 ? "" : "s"}`;
 
-  for (const song of visible) {
-    const card = document.createElement("article");
-    card.className = "song-card";
+    sectionTitle.textContent =
+        selectedMood === "All"
+            ? "Your Music"
+            : selectedMood === "Liked"
+                ? "Liked Songs"
+                : `${selectedMood} Songs`;
 
-    const cover = document.createElement("div");
-    cover.className = "cover";
-    cover.textContent = "♫";
+    if (filteredSongs.length === 0) {
+        songGrid.innerHTML = "";
+        emptyMessage.style.display = "block";
 
-    const title = document.createElement("div");
-    title.className = "song-title";
-    title.textContent = song.title;
+        emptyMessage.textContent = songs.length
+            ? "No matching songs. Try another search or mood."
+            : 'Your library is empty. Click "Add Your Songs" to begin.';
 
-    const artist = document.createElement("div");
-    artist.className = "song-artist";
-    artist.textContent = song.artist;
-
-    const actions = document.createElement("div");
-    actions.className = "card-actions";
-
-    const moodSelect = document.createElement("select");
-    for (const mood of moods) {
-      const option = document.createElement("option");
-      option.value = mood;
-      option.textContent = mood;
-      moodSelect.appendChild(option);
+        return;
     }
-    moodSelect.value = song.mood;
-    moodSelect.addEventListener("change", () => {
-      songs[song.index].mood = moodSelect.value;
-      renderSongs();
-    });
 
-    const play = document.createElement("button");
-    play.textContent = "▶";
-    play.title = "Play song";
-    play.addEventListener("click", () => playSong(song.index));
+    emptyMessage.style.display = "none";
 
-    const like = document.createElement("button");
-    like.textContent = song.liked ? "♥" : "♡";
-    like.title = "Like song";
-    like.addEventListener("click", () => {
-      songs[song.index].liked = !songs[song.index].liked;
-      renderSongs();
-    });
+    songGrid.innerHTML = filteredSongs.map((song) => `
+        <article class="song-card">
+            <div class="song-art">♫</div>
 
-    actions.append(moodSelect, play, like);
-    card.append(cover, title, artist, actions);
-    songGrid.appendChild(card);
-  }
+            <div class="song-info">
+                <h3>${escapeHTML(song.title)}</h3>
+                <p>${escapeHTML(song.artist)} · ${escapeHTML(song.mood)}</p>
+            </div>
 
-  document.getElementById("songCount").textContent =
-    `${visible.length} songs`;
+            <div class="song-actions">
+                <span class="small-tag">${escapeHTML(song.mood)}</span>
 
-  emptyMessage.style.display =
-    visible.length ? "none" : "block";
+                <button
+                    type="button"
+                    data-action="like"
+                    data-id="${song.id}"
+                    aria-label="${song.liked ? "Unlike" : "Like"} ${escapeHTML(song.title)}"
+                >${song.liked ? "♥" : "♡"}</button>
+
+                <button
+                    type="button"
+                    data-action="play"
+                    data-id="${song.id}"
+                    aria-label="Play ${escapeHTML(song.title)}"
+                >▶</button>
+
+                <button
+                    type="button"
+                    data-action="mood"
+                    data-id="${song.id}"
+                    aria-label="Change mood for ${escapeHTML(song.title)}"
+                >✎</button>
+            </div>
+        </article>
+    `).join("");
 }
 
-function playSong(index) {
-  currentIndex = index;
-  const song = songs[index];
+// ============================================
+// 11. HANDLE SONG CARD BUTTONS
+// ============================================
 
-  audio.src = song.url;
-  audio.play().catch(error => {
-    console.error("Playback error:", error);
-  });
+songGrid.addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-action]");
 
-  document.getElementById("nowTitle").textContent = song.title;
-  document.getElementById("nowArtist").textContent = song.artist;
-  document.getElementById("playPause").textContent = "Ⅱ";
-  document.getElementById("likeCurrent").textContent =
-    song.liked ? "♥" : "♡";
-}
+    if (!button) {
+        return;
+    }
 
-document.querySelectorAll(".nav").forEach(button => {
-  button.addEventListener("click", () => {
-    currentFilter = button.dataset.filter;
-
-    document.querySelectorAll(".nav").forEach(item =>
-      item.classList.toggle("active", item === button)
+    const song = songs.find(
+        (item) => item.id === Number(button.dataset.id)
     );
 
-    document.getElementById("pageTitle").textContent =
-      currentFilter === "All" ? "All Songs" :
-      currentFilter === "Liked" ? "Liked Songs" :
-      `${currentFilter} Songs`;
+    if (!song) {
+        return;
+    }
 
-    renderSongs();
-  });
+    try {
+        if (button.dataset.action === "like") {
+            song.liked = !song.liked;
+
+            await updateSavedSong(song);
+            renderSongs();
+            updateCurrentLikeButton();
+        }
+
+        if (button.dataset.action === "play") {
+            playSong(song);
+        }
+
+        if (button.dataset.action === "mood") {
+            const chosen = prompt(
+                "Choose a mood:\n" + moods.join(", "),
+                song.mood
+            );
+
+            if (chosen === null) {
+                return;
+            }
+
+            const selected = moods.find(
+                (mood) =>
+                    mood.toLowerCase() === chosen.trim().toLowerCase()
+            );
+
+            if (!selected) {
+                alert("Please enter one of the listed moods.");
+                return;
+            }
+
+            song.mood = selected;
+
+            await updateSavedSong(song);
+            renderSongs();
+        }
+    } catch (error) {
+        console.error("Could not update song:", error);
+        alert("Could not update this song. Please try again.");
+    }
 });
 
-search.addEventListener("input", renderSongs);
+// ============================================
+// 12. PLAY A SONG
+// ============================================
 
-document.getElementById("playPause").addEventListener("click", () => {
-  if (currentIndex === -1) {
-    if (songs.length) playSong(0);
-  } else if (audio.paused) {
-    audio.play();
-  } else {
-    audio.pause();
-  }
+function playSong(song) {
+    if (!song) {
+        return;
+    }
+
+    currentSongId = song.id;
+
+    audio.src = song.url;
+    nowTitle.textContent = song.title;
+    nowArtist.textContent = song.artist;
+
+    updateCurrentLikeButton();
+
+    audio.play().catch((error) => {
+        console.error("Playback failed:", error);
+        alert("Could not play this audio file.");
+    });
+}
+
+// ============================================
+// 13. PLAY / PAUSE
+// ============================================
+
+playPauseButton.addEventListener("click", () => {
+    if (!currentSongId) {
+        if (songs.length > 0) {
+            playSong(songs[0]);
+        } else {
+            alert("Add some music first!");
+        }
+
+        return;
+    }
+
+    if (audio.paused) {
+        audio.play().catch(console.error);
+    } else {
+        audio.pause();
+    }
 });
+
+// ============================================
+// 14. NEXT AND PREVIOUS SONGS
+// ============================================
+
+function playRelativeSong(direction) {
+    if (songs.length === 0) {
+        return;
+    }
+
+    let index = songs.findIndex(
+        (song) => song.id === currentSongId
+    );
+
+    index = index < 0
+        ? 0
+        : (index + direction + songs.length) % songs.length;
+
+    playSong(songs[index]);
+}
+
+previousButton.addEventListener("click", () => {
+    playRelativeSong(-1);
+});
+
+nextButton.addEventListener("click", () => {
+    playRelativeSong(1);
+});
+
+audio.addEventListener("ended", () => {
+    playRelativeSong(1);
+});
+
+// ============================================
+// 15. PLAYER BUTTON STATE
+// ============================================
 
 audio.addEventListener("play", () => {
-  document.getElementById("playPause").textContent = "Ⅱ";
+    playPauseButton.textContent = "❚❚";
 });
 
 audio.addEventListener("pause", () => {
-  document.getElementById("playPause").textContent = "▶";
+    playPauseButton.textContent = "▶";
 });
 
-function playRelative(step) {
-  if (!songs.length) return;
-  const next = currentIndex === -1
-    ? 0
-    : (currentIndex + step + songs.length) % songs.length;
-  playSong(next);
+// ============================================
+// 16. SONG PROGRESS AND TIME
+// ============================================
+
+function formatTime(seconds) {
+    if (!Number.isFinite(seconds)) {
+        return "0:00";
+    }
+
+    const minutes = Math.floor(seconds / 60);
+    const remaining = Math.floor(seconds % 60)
+        .toString()
+        .padStart(2, "0");
+
+    return `${minutes}:${remaining}`;
 }
 
-document.getElementById("previous").addEventListener("click",
-  () => playRelative(-1));
-
-document.getElementById("next").addEventListener("click",
-  () => playRelative(1));
-
-document.getElementById("likeCurrent").addEventListener("click", () => {
-  if (currentIndex === -1) return;
-  songs[currentIndex].liked = !songs[currentIndex].liked;
-  document.getElementById("likeCurrent").textContent =
-    songs[currentIndex].liked ? "♥" : "♡";
-  renderSongs();
-});
-
 audio.addEventListener("loadedmetadata", () => {
-  document.getElementById("duration").textContent =
-    formatTime(audio.duration);
+    duration.textContent = formatTime(audio.duration);
+    seek.value = 0;
 });
 
 audio.addEventListener("timeupdate", () => {
-  document.getElementById("currentTime").textContent =
-    formatTime(audio.currentTime);
+    currentTime.textContent = formatTime(audio.currentTime);
 
-  if (Number.isFinite(audio.duration) && audio.duration > 0) {
-    document.getElementById("seek").value =
-      audio.currentTime / audio.duration * 100;
-  }
+    seek.value = audio.duration
+        ? (audio.currentTime / audio.duration) * 100
+        : 0;
 });
 
-document.getElementById("seek").addEventListener("input", event => {
-  if (Number.isFinite(audio.duration) && audio.duration > 0) {
-    audio.currentTime = Number(event.target.value) / 100 * audio.duration;
-  }
+seek.addEventListener("input", () => {
+    if (audio.duration) {
+        audio.currentTime =
+            (Number(seek.value) / 100) * audio.duration;
+    }
 });
 
-document.getElementById("volume").addEventListener("input", event => {
-  audio.volume = Number(event.target.value);
+// ============================================
+// 17. VOLUME
+// ============================================
+
+audio.volume = Number(volume.value);
+
+volume.addEventListener("input", () => {
+    audio.volume = Number(volume.value);
 });
 
-audio.volume = 0.8;
+// ============================================
+// 18. LIKE CURRENT SONG
+// ============================================
 
-audio.addEventListener("ended", () => playRelative(1));
+function updateCurrentLikeButton() {
+    const song = songs.find(
+        (item) => item.id === currentSongId
+    );
 
-function formatTime(seconds) {
-  if (!Number.isFinite(seconds)) return "0:00";
-  const minutes = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60).toString().padStart(2, "0");
-  return `${minutes}:${secs}`;
+    likeCurrent.textContent = song && song.liked ? "♥" : "♡";
 }
 
-renderSongs();
+likeCurrent.addEventListener("click", async () => {
+    const song = songs.find(
+        (item) => item.id === currentSongId
+    );
+
+    if (!song) {
+        return;
+    }
+
+    try {
+        song.liked = !song.liked;
+
+        await updateSavedSong(song);
+        renderSongs();
+        updateCurrentLikeButton();
+    } catch (error) {
+        console.error("Could not save like:", error);
+        alert("Could not save your like.");
+    }
+});
+
+// ============================================
+// 19. SIDEBAR NAVIGATION
+// ============================================
+
+document.querySelectorAll(".nav[data-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+        selectedMood = button.dataset.filter;
+
+        document.querySelectorAll(".nav[data-filter]").forEach((item) => {
+            item.classList.toggle("active", item === button);
+        });
+
+        pageTitle.textContent =
+            selectedMood === "All"
+                ? "All Songs"
+                : selectedMood === "Liked"
+                    ? "Liked Songs"
+                    : selectedMood;
+
+        renderSongs();
+    });
+});
+
+// ============================================
+// 20. SEARCH
+// ============================================
+
+searchInput.addEventListener("input", renderSongs);
+
+// ============================================
+// 21. INITIALIZE MOODIFY
+// ============================================
+
+async function initializeMoodify() {
+    try {
+        db = await openDatabase();
+        await loadSongs();
+
+        console.log("Moodify initialized successfully.");
+        console.log("Saved songs:", songs.length);
+    } catch (error) {
+        console.error("Could not initialize Moodify:", error);
+
+        alert(
+            "Could not load your music library. " +
+            "Check the browser console for details."
+        );
+    }
+}
+
+initializeMoodify();
